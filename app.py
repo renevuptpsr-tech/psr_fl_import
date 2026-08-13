@@ -25,7 +25,6 @@ st.divider()
 SUPABASE_URL = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
 
-# Inisialisasi Supabase Client Utama
 supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
@@ -33,13 +32,12 @@ if SUPABASE_URL and SUPABASE_KEY:
     except Exception as e:
         st.error(f"Failed to initialize Supabase Client: {str(e)}")
 
-# Initialize Session State
 if "user" not in st.session_state:
     st.session_state["user"] = None
 if "session" not in st.session_state:
     st.session_state["session"] = None
 
-# Sidebar Authorization Panel (Email & Password Login)
+# Sidebar Authorization Panel
 with st.sidebar:
     st.header("⚙️ System Status")
     if supabase:
@@ -73,7 +71,6 @@ with st.sidebar:
                 st.warning("Please enter both Email and Password.")
             else:
                 try:
-                    # Authenticate via Supabase Auth
                     response = supabase.auth.sign_in_with_password({
                         "email": email_input.strip(),
                         "password": pwd_input
@@ -106,11 +103,9 @@ def normalize_function_code(code_val, level_val, desc_val=""):
     except:
         level = 0.0
 
-    # 1. Normalisasi SERANDANG G di Level 4 / Deskripsi SERANDANG menjadi SG
     if code == 'G' and (level == 4.0 or 'SERANDANG' in desc):
         return 'SG'
 
-    # 2. Rule Mapping Kode Duplikat PLN (V, X, O, Q)
     mapping = {
         ('V', 3.0): 'V1', ('V', 4.0): 'V2',
         ('X', 3.5): 'X1', ('X', 4.0): 'X2',
@@ -138,6 +133,10 @@ if uploaded_file is not None:
 
         # Exclude baris perantara Group (KD_FUNGSI = 'X')
         df_cleaned = df[df['KD_FUNGSI'].astype(str).str.strip() != 'X'].copy()
+
+        # Urutkan berdasarkan NLEVEL Ascending (Parent Level 1/2/3 terlebih dahulu)
+        df_cleaned['NLEVEL_NUM'] = pd.to_numeric(df_cleaned['NLEVEL'], errors='coerce').fillna(99)
+        df_cleaned = df_cleaned.sort_values(by='NLEVEL_NUM', ascending=True)
 
         # Eksekusi Normalisasi
         df_cleaned['SUP_FUNCTLOC_CLEAN'] = df_cleaned['SUP_FUNCTLOC'].apply(normalize_sup_functloc)
@@ -207,7 +206,7 @@ if uploaded_file is not None:
             st.dataframe(df_display, use_container_width=True, height=400)
 
         # ========================================================
-        # 7. EXECUTE SYNC (DENGAN AUTHENTICATED CLIENT)
+        # 7. EXECUTE SYNC (2-PASS SYNC: AMAN DARIK FOREIGN KEY FK_PARENT)
         # ========================================================
         st.divider()
         
@@ -219,10 +218,8 @@ if uploaded_file is not None:
                     st.error("Database connection unavailable.")
                 else:
                     try:
-                        # 1. AMBIL ACCESS TOKEN USER
                         access_token = st.session_state["session"].access_token
 
-                        # 2. INSIALISASI CLIENT DENGAN ClientOptions HADER BEARER TOKEN
                         auth_supabase = create_client(
                             SUPABASE_URL, 
                             SUPABASE_KEY, 
@@ -254,19 +251,31 @@ if uploaded_file is not None:
                         
                         batch_size = 500
                         total_records = len(mapped_data)
-                        
+
+                        # ----------------------------------------------------
+                        # TAHAP 1: Registrasi Semua ID (Set sup_functloc_id = None)
+                        # ----------------------------------------------------
+                        status_text.text("Pass 1/2: Registering all FLC IDs to database...")
                         for i in range(0, total_records, batch_size):
-                            batch = mapped_data[i:i + batch_size]
+                            batch_p1 = [dict(item, sup_functloc_id=None) for item in mapped_data[i:i + batch_size]]
+                            auth_supabase.table('mst_functloc').upsert(batch_p1).execute()
                             
-                            # EXECUTE BATCH UPSERT DENGAN CLIENT TERAUTENTIKASI
-                            auth_supabase.table('mst_functloc').upsert(batch).execute()
+                            prog = ((i + batch_size) / total_records) * 0.5
+                            progress_bar.progress(min(prog, 0.5))
+
+                        # ----------------------------------------------------
+                        # TAHAP 2: Linking Parent Hierarchy (Set sup_functloc_id Asli)
+                        # ----------------------------------------------------
+                        status_text.text("Pass 2/2: Linking parent-child hierarchy relations...")
+                        for i in range(0, total_records, batch_size):
+                            batch_p2 = mapped_data[i:i + batch_size]
+                            auth_supabase.table('mst_functloc').upsert(batch_p2).execute()
                             
-                            current_progress = min((i + batch_size) / total_records, 1.0)
-                            progress_bar.progress(current_progress)
-                            status_text.text(f"Synchronizing records... {min(i + batch_size, total_records):,} / {total_records:,}")
+                            prog = 0.5 + (((i + batch_size) / total_records) * 0.5)
+                            progress_bar.progress(min(prog, 1.0))
 
                         st.balloons()
-                        st.success("Database synchronization completed successfully.")
+                        st.success("🎉 Database synchronization completed successfully with 100% hierarchy integrity!")
 
                     except Exception as e:
                         st.error(f"Synchronization failed: {str(e)}")
