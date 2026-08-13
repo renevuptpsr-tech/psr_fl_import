@@ -87,7 +87,7 @@ def determine_is_active(status_val):
     return c.split('.')[0].upper() in ['2', '4', '5', '6', '7', '8'] if c else False
 
 # ========================================================
-# 4. PROSES IMPORT
+# 4. PROSES IMPORT & REVIEW
 # ========================================================
 uploaded_file = st.file_uploader("Upload Excel Master Data", type=["xlsx"])
 
@@ -97,6 +97,25 @@ if uploaded_file:
         df.columns = df.iloc[1].values
         df = df.iloc[2:].copy()
     
+    # Pre-processing untuk review
+    df_cleaned = df[df['KD_FUNGSI'].astype(str).str.strip() != 'X'].copy()
+    df_cleaned['FUNCTION_CODE_CLEAN'] = df_cleaned.apply(lambda r: normalize_function_code(r['KD_FUNGSI'], r['NLEVEL'], r['DESKRIPSI']), axis=1)
+
+    # --- TAB REVIEW ---
+    st.divider()
+    st.subheader("Dataset Review & Audit")
+    search = st.text_input("Filter Data:", placeholder="Cari ID FLC atau Nama Lokasi...")
+    
+    if search:
+        df_view = df_cleaned[df_cleaned['ID_FUNCTLOC'].astype(str).str.contains(search, case=False, na=False) | 
+                             df_cleaned['NM_LOKASI'].astype(str).str.contains(search, case=False, na=False)]
+    else:
+        df_view = df_cleaned
+        
+    st.dataframe(df_view.head(500), use_container_width=True) # Tampilkan 500 baris pertama
+    st.caption(f"Menampilkan {len(df_view)} baris data.")
+
+    # --- PROSES SYNC ---
     if st.button("Jalankan Import Data"):
         if not st.session_state["user"]:
             st.error("Harap login di Sidebar!")
@@ -108,27 +127,22 @@ if uploaded_file:
 
         with st.spinner("Processing..."):
             mapped_data, ref_flc_data = [], []
+            valid_ids = set(df_cleaned['ID_FUNCTLOC'].dropna().astype(str).str.strip())
             
-            # Sanitasi Parent ID (Validasi vs Database/Excel)
-            valid_ids = set(df['ID_FUNCTLOC'].dropna().astype(str).str.strip())
-            
-            for _, row in df.iterrows():
+            for _, row in df_cleaned.iterrows():
                 flc_id = clean_str(row.get('ID_FUNCTLOC'))
                 if not flc_id: continue
                 
-                # Normalisasi Parent
                 raw_sup = clean_str(row.get('SUP_FUNCTLOC'))
                 sup_id = re.sub(r'-GR\d+$', '', raw_sup) if raw_sup else None
                 sup_id = sup_id if sup_id in valid_ids else None
                 
                 status = clean_str(row.get('STATUS'))
-                fn_code = normalize_function_code(row.get('KD_FUNGSI'), row.get('NLEVEL'), row.get('DESKRIPSI'))
+                fn_code = row.get('FUNCTION_CODE_CLEAN')
                 loc_name = clean_str(row.get('NM_LOKASI'))
                 
-                # Ref data
                 ref_flc_data.append({"flc_id": flc_id, "name": loc_name, "function_code": fn_code, "is_active": determine_is_active(status)})
                 
-                # Mst data (Mapping lengkap tanpa ada yang terlewat)
                 mapped_data.append({
                     "functloc_id": flc_id,
                     "sup_functloc_id": sup_id,
@@ -153,18 +167,15 @@ if uploaded_file:
                     "ownership": clean_str(row.get('MILIK'))
                 })
 
-            # 3-Step Sync (Mencegah Error Foreign Key)
+            # 3-Step Sync
             total = len(mapped_data)
             batch = 500
-            
             for i in range(0, total, batch):
                 auth_supabase.table('ref_flc').upsert(ref_flc_data[i:i+batch]).execute()
-            
             for i in range(0, total, batch):
                 data = [dict(item, sup_functloc_id=None) for item in mapped_data[i:i+batch]]
                 auth_supabase.table('mst_functloc').upsert(data).execute()
-            
             for i in range(0, total, batch):
                 auth_supabase.table('mst_functloc').upsert(mapped_data[i:i+batch]).execute()
                 
-        st.success("Import Berhasil dengan data yang ter-normalisasi!")
+        st.success("Import Berhasil!")
