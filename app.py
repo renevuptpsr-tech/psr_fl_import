@@ -206,7 +206,7 @@ if uploaded_file is not None:
             st.dataframe(df_display, use_container_width=True, height=400)
 
         # ========================================================
-        # 7. EXECUTE SYNC (3-STEP PIPELINE: REF_FLC -> MST_PASS_1 -> MST_PASS_2)
+        # 7. EXECUTE SYNC (3-STEP PIPELINE MATCHING REF_FLC SCHEMA)
         # ========================================================
         st.divider()
         
@@ -226,20 +226,22 @@ if uploaded_file is not None:
                             options=ClientOptions(headers={"Authorization": f"Bearer {access_token}"})
                         )
 
-                        # Data untuk ref_flc
                         ref_flc_data = []
-                        # Data untuk mst_functloc
                         mapped_data = []
 
                         for _, row in df_cleaned.iterrows():
                             flc_id = str(row['ID_FUNCTLOC']).strip()
                             loc_name = str(row['NM_LOKASI']).strip()
+                            fn_code = row['FUNCTION_CODE_CLEAN']
 
+                            # Sesuai DDL public.ref_flc (kolom: flc_id, name, function_code)
                             ref_flc_data.append({
                                 "flc_id": flc_id,
-                                "flc_name": loc_name
+                                "name": loc_name,
+                                "function_code": fn_code
                             })
 
+                            # Sesuai DDL public.mst_functloc
                             mapped_data.append({
                                 "functloc_id": flc_id,
                                 "sup_functloc_id": row['SUP_FUNCTLOC_CLEAN'],
@@ -249,7 +251,7 @@ if uploaded_file is not None:
                                 "nlevel": float(row['NLEVEL']) if pd.notnull(row['NLEVEL']) else None,
                                 "status_code": str(row['STATUS']).strip() if pd.notnull(row['STATUS']) else None,
                                 "voltage_code": str(row['TEGANGAN']).strip() if pd.notnull(row['TEGANGAN']) else None,
-                                "function_code": row['FUNCTION_CODE_CLEAN'],
+                                "function_code": fn_code,
                                 "region_code": str(row['KD_WILAYAH']).strip() if pd.notnull(row['KD_WILAYAH']) else None,
                                 "workcenter": str(row['WORKCENTER']).strip() if pd.notnull(row['WORKCENTER']) else None,
                                 "plant_id": str(row['ID_PLANT']).strip() if pd.notnull(row['ID_PLANT']) else None,
