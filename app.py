@@ -25,7 +25,7 @@ st.divider()
 SUPABASE_URL = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
 
-# Inisialisasi Supabase Client jika kredensial tersedia
+# Inisialisasi Supabase Client Utama
 supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
@@ -33,9 +33,11 @@ if SUPABASE_URL and SUPABASE_KEY:
     except Exception as e:
         st.error(f"Failed to initialize Supabase Client: {str(e)}")
 
-# Initialize Session State untuk Login User
+# Initialize Session State untuk menyimpan data User & Session
 if "user" not in st.session_state:
     st.session_state["user"] = None
+if "session" not in st.session_state:
+    st.session_state["session"] = None
 
 # Sidebar Authorization Panel (Email & Password Login)
 with st.sidebar:
@@ -53,6 +55,11 @@ with st.sidebar:
         st.success(f"Logged in as:\n**{st.session_state['user'].email}** 🟢")
         if st.button("Logout", type="secondary", use_container_width=True):
             st.session_state["user"] = None
+            st.session_state["session"] = None
+            try:
+                supabase.auth.sign_out()
+            except:
+                pass
             st.rerun()
     else:
         st.info("Public Mode: View & Audit Only 👁️")
@@ -71,8 +78,9 @@ with st.sidebar:
                         "email": email_input.strip(),
                         "password": pwd_input
                     })
-                    if response.user:
+                    if response.user and response.session:
                         st.session_state["user"] = response.user
+                        st.session_state["session"] = response.session
                         st.success("Authentication Successful!")
                         st.rerun()
                 except Exception as err:
@@ -98,9 +106,11 @@ def normalize_function_code(code_val, level_val, desc_val=""):
     except:
         level = 0.0
 
+    # 1. Normalisasi SERANDANG G di Level 4 / Deskripsi SERANDANG menjadi SG
     if code == 'G' and (level == 4.0 or 'SERANDANG' in desc):
         return 'SG'
 
+    # 2. Rule Mapping Kode Duplikat PLN (V, X, O, Q)
     mapping = {
         ('V', 3.0): 'V1', ('V', 4.0): 'V2',
         ('X', 3.5): 'X1', ('X', 4.0): 'X2',
@@ -197,17 +207,28 @@ if uploaded_file is not None:
             st.dataframe(df_display, use_container_width=True, height=400)
 
         # ========================================================
-        # 7. EXECUTE SYNC (OTORISASI EMAIL & PASSWORD)
+        # 7. EXECUTE SYNC (OTORISASI EMAIL & PASSWORD WITH JWT TOKEN)
         # ========================================================
         st.divider()
         
-        if st.session_state["user"]:
+        if st.session_state["user"] and st.session_state["session"]:
             st.success(f"🔓 Authorized Session Active ({st.session_state['user'].email}): Data Synchronization Privileges Granted.")
+            
             if st.button("Synchronize to Supabase", type="primary", use_container_width=True):
                 if not supabase:
                     st.error("Database connection unavailable.")
                 else:
                     try:
+                        # 1. AMBIL JWT ACCESS TOKEN USER DARI SESSION STATE
+                        access_token = st.session_state["session"].access_token
+
+                        # 2. BUAT AUTHENTICATED CLIENT DENGAN TOKEN BEARER USER (ROLE: AUTHENTICATED)
+                        auth_supabase = create_client(
+                            SUPABASE_URL, 
+                            SUPABASE_KEY, 
+                            options={"headers": {"Authorization": f"Bearer {access_token}"}}
+                        )
+
                         mapped_data = []
                         for _, row in df_cleaned.iterrows():
                             mapped_data.append({
@@ -236,7 +257,9 @@ if uploaded_file is not None:
                         
                         for i in range(0, total_records, batch_size):
                             batch = mapped_data[i:i + batch_size]
-                            supabase.table('mst_functloc').upsert(batch).execute()
+                            
+                            # ESEKUSI MENGGUNAKAN AUTHENTICATED CLIENT
+                            auth_supabase.table('mst_functloc').upsert(batch).execute()
                             
                             current_progress = min((i + batch_size) / total_records, 1.0)
                             progress_bar.progress(current_progress)
