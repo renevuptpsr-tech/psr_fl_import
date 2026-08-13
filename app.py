@@ -115,6 +115,13 @@ def normalize_function_code(code_val, level_val, desc_val=""):
     
     return mapping.get((code, level), code)
 
+def determine_is_active(status_val):
+    """Aturan is_active=True jika STATUS ada di 2, 4, 5, 6, 7, 8"""
+    if pd.isna(status_val):
+        return False
+    status_str = str(status_val).strip().split('.')[0].upper()
+    return status_str in ['2', '4', '5', '6', '7', '8']
+
 # ========================================================
 # 4. UPLOAD & BACA FILE EXCEL
 # ========================================================
@@ -138,10 +145,16 @@ if uploaded_file is not None:
         df_cleaned['NLEVEL_NUM'] = pd.to_numeric(df_cleaned['NLEVEL'], errors='coerce').fillna(99)
         df_cleaned = df_cleaned.sort_values(by='NLEVEL_NUM', ascending=True)
 
-        # Eksekusi Normalisasi
+        # 1. Normalisasi Parent ID & Kode Fungsi
         df_cleaned['SUP_FUNCTLOC_CLEAN'] = df_cleaned['SUP_FUNCTLOC'].apply(normalize_sup_functloc)
         df_cleaned['FUNCTION_CODE_CLEAN'] = df_cleaned.apply(
             lambda r: normalize_function_code(r['KD_FUNGSI'], r['NLEVEL'], r['DESKRIPSI']), axis=1
+        )
+
+        # 2. PARENT SANITIZATION (Memastikan SUP_FUNCTLOC_CLEAN benar-benar ada di ID_FUNCTLOC)
+        valid_flc_ids = set(df_cleaned['ID_FUNCTLOC'].astype(str).str.strip())
+        df_cleaned['SUP_FUNCTLOC_CLEAN'] = df_cleaned['SUP_FUNCTLOC_CLEAN'].apply(
+            lambda x: x if (x and str(x).strip() in valid_flc_ids) else None
         )
 
         # Metrics Calculation
@@ -206,7 +219,7 @@ if uploaded_file is not None:
             st.dataframe(df_display, use_container_width=True, height=400)
 
         # ========================================================
-        # 7. EXECUTE SYNC (3-STEP PIPELINE MATCHING REF_FLC SCHEMA)
+        # 7. EXECUTE SYNC (3-STEP PIPELINE WITH IS_ACTIVE RULE)
         # ========================================================
         st.divider()
         
@@ -233,12 +246,14 @@ if uploaded_file is not None:
                             flc_id = str(row['ID_FUNCTLOC']).strip()
                             loc_name = str(row['NM_LOKASI']).strip()
                             fn_code = row['FUNCTION_CODE_CLEAN']
+                            status_code = row['STATUS']
 
-                            # Sesuai DDL public.ref_flc (kolom: flc_id, name, function_code)
+                            # Sesuai DDL public.ref_flc (termasuk penentuan is_active)
                             ref_flc_data.append({
                                 "flc_id": flc_id,
                                 "name": loc_name,
-                                "function_code": fn_code
+                                "function_code": fn_code,
+                                "is_active": determine_is_active(status_code)
                             })
 
                             # Sesuai DDL public.mst_functloc
@@ -249,7 +264,7 @@ if uploaded_file is not None:
                                 "description": str(row['DESKRIPSI']).strip() if pd.notnull(row['DESKRIPSI']) else None,
                                 "unit_code": str(row['UNIT']).strip() if pd.notnull(row['UNIT']) else None,
                                 "nlevel": float(row['NLEVEL']) if pd.notnull(row['NLEVEL']) else None,
-                                "status_code": str(row['STATUS']).strip() if pd.notnull(row['STATUS']) else None,
+                                "status_code": str(status_code).strip() if pd.notnull(status_code) else None,
                                 "voltage_code": str(row['TEGANGAN']).strip() if pd.notnull(row['TEGANGAN']) else None,
                                 "function_code": fn_code,
                                 "region_code": str(row['KD_WILAYAH']).strip() if pd.notnull(row['KD_WILAYAH']) else None,
@@ -267,7 +282,7 @@ if uploaded_file is not None:
                         total_records = len(mapped_data)
 
                         # ----------------------------------------------------
-                        # TAHAP 1: Sync ke tabel ref_flc
+                        # TAHAP 1: Sync ke tabel ref_flc (dengan status is_active)
                         # ----------------------------------------------------
                         status_text.text("Step 1/3: Synchronizing reference table (ref_flc)...")
                         for i in range(0, total_records, batch_size):
@@ -278,7 +293,7 @@ if uploaded_file is not None:
                             progress_bar.progress(min(prog, 0.33))
 
                         # ----------------------------------------------------
-                        # TAHAP 2: Sync ke mst_functloc (IDs without Parent)
+                        # TAHAP 2: Sync ke mst_functloc (Tanpa Parent/Parent=None)
                         # ----------------------------------------------------
                         status_text.text("Step 2/3: Registering records into mst_functloc...")
                         for i in range(0, total_records, batch_size):
@@ -289,7 +304,7 @@ if uploaded_file is not None:
                             progress_bar.progress(min(prog, 0.66))
 
                         # ----------------------------------------------------
-                        # TAHAP 3: Sync Parent-Child Hierarchy Relationships
+                        # TAHAP 3: Link Hirarki Parent-Child
                         # ----------------------------------------------------
                         status_text.text("Step 3/3: Linking parent-child hierarchy relations...")
                         for i in range(0, total_records, batch_size):
@@ -300,7 +315,7 @@ if uploaded_file is not None:
                             progress_bar.progress(min(prog, 1.0))
 
                         st.balloons()
-                        st.success("🎉 All 3 synchronization steps completed successfully with 100% integrity!")
+                        st.success("🎉 All 3 synchronization steps completed successfully with 100% integrity & status calculation!")
 
                     except Exception as e:
                         st.error(f"Synchronization failed: {str(e)}")
