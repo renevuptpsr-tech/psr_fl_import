@@ -85,7 +85,7 @@ with st.sidebar:
                     st.error(f"Login Failed: {str(err)}")
 
 # ========================================================
-# 3. FUNGSI TRANSFOMASI, NORMALISASI & SANITASI JSON
+# 3. FUNGSI TRANSFOMASI, NORMALISASI & SANITASI DATA
 # ========================================================
 def clean_str(val):
     """Pembersih String: Mengubah NaN / null / string 'nan' menjadi None (JSON Null)"""
@@ -97,15 +97,30 @@ def clean_str(val):
     return s_val
 
 def clean_float(val):
-    """Pembersih Float: Mencegah float('nan') lolos ke serializer JSON"""
+    """Pembersih Float: Menangani koordinat, altitude, level tanpa membocorkan NaN"""
     if pd.isna(val) or val is None:
         return None
     try:
+        # Menangani koma jika terbaca sebagai string numerik berformat Indonesia (misal: "2,965886")
+        if isinstance(val, str):
+            val = val.replace(',', '.')
         f_val = float(val)
         if math.isnan(f_val) or math.isinf(f_val):
             return None
         return f_val
     except (ValueError, TypeError):
+        return None
+
+def clean_date(val):
+    """Pembersih Tanggal: Mengonversi format tanggal ke ISO String (YYYY-MM-DD)"""
+    if pd.isna(val) or val is None:
+        return None
+    try:
+        dt = pd.to_datetime(val, errors='coerce')
+        if pd.isna(dt):
+            return None
+        return dt.strftime('%Y-%m-%d')
+    except:
         return None
 
 def normalize_sup_functloc(sup_val):
@@ -239,7 +254,7 @@ if uploaded_file is not None:
             st.dataframe(df_display, use_container_width=True, height=400)
 
         # ========================================================
-        # 7. EXECUTE SYNC (DENGAN STRICT JSON SANITIZATION)
+        # 7. EXECUTE SYNC (FULL FIELD MAPPING TERIKAT PENUH)
         # ========================================================
         st.divider()
         
@@ -265,13 +280,13 @@ if uploaded_file is not None:
                         for _, row in df_cleaned.iterrows():
                             flc_id = clean_str(row.get('ID_FUNCTLOC'))
                             if not flc_id:
-                                continue  # Lewati baris tanpa ID valid
+                                continue
 
                             loc_name = clean_str(row.get('NM_LOKASI')) or flc_id
                             fn_code = clean_str(row.get('FUNCTION_CODE_CLEAN'))
                             status_code = clean_str(row.get('STATUS'))
 
-                            # Payload ref_flc terbebas dari NaN
+                            # Payload ref_flc
                             ref_flc_data.append({
                                 "flc_id": flc_id,
                                 "name": loc_name,
@@ -279,7 +294,7 @@ if uploaded_file is not None:
                                 "is_active": determine_is_active(status_code)
                             })
 
-                            # Payload mst_functloc terbebas dari NaN
+                            # Payload mst_functloc DENGAN MAPPING LENGKAP BUKAN DUMMY
                             mapped_data.append({
                                 "functloc_id": flc_id,
                                 "sup_functloc_id": clean_str(row.get('SUP_FUNCTLOC_CLEAN')),
@@ -291,11 +306,24 @@ if uploaded_file is not None:
                                 "voltage_code": clean_str(row.get('TEGANGAN')),
                                 "function_code": fn_code,
                                 "region_code": clean_str(row.get('KD_WILAYAH')),
+                                "operational_date": clean_date(row.get('TGL_OPRS')),
+                                "non_operational_date": clean_date(row.get('TGL_TDK_OPRS')),
                                 "workcenter": clean_str(row.get('WORKCENTER')),
                                 "plant_id": clean_str(row.get('ID_PLANT')),
                                 "grouplokasi_code": clean_str(row.get('KD_GROUPLOKASI')),
-                                "gi_flc": clean_str(row.get('GI_FLC')),
+                                "short_name": clean_str(row.get('NMSINGKT')),
+                                "address": clean_str(row.get('ALAMAT')),
+                                "city": clean_str(row.get('KOTA')),
+                                "postal_code": clean_str(row.get('KODEPOS')),
+                                "latitude": clean_float(row.get('LATITUDE')),
+                                "longitude": clean_float(row.get('LONGITUDE')),
+                                "altitude": clean_float(row.get('ALTITUDE')),
                                 "baygroup_code": clean_str(row.get('BAYGROUP')),
+                                "gi_flc": clean_str(row.get('GI_FLC')),
+                                "slo_date": clean_date(row.get('TGL_SLO')),
+                                "slo_number": clean_str(row.get('NO_SLO')),
+                                "plant_section": clean_str(row.get('PLANT_SECTION')),
+                                "ownership": clean_str(row.get('MILIK'))
                             })
 
                         progress_bar = st.progress(0)
@@ -338,7 +366,7 @@ if uploaded_file is not None:
                             progress_bar.progress(min(prog, 1.0))
 
                         st.balloons()
-                        st.success("🎉 All 3 synchronization steps completed successfully with 100% integrity & JSON compliance!")
+                        st.success("🎉 All 3 synchronization steps completed! All columns fully mapped!")
 
                     except Exception as e:
                         st.error(f"Synchronization failed: {str(e)}")
