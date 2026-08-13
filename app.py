@@ -1,44 +1,40 @@
-import streamlit as st
-import pandas as pd
+import os
 import re
+import pandas as pd
+import streamlit as st
 from supabase import create_client, Client
 
 # ========================================================
 # 1. KONFIGURASI HALAMAN STREAMLIT
 # ========================================================
 st.set_page_config(
-    page_title="PLN FLC Importer & Normalizer",
+    page_title="PLN FLC Data Engine",
     page_icon="⚡",
     layout="wide"
 )
 
-st.title("⚡ PLN Functional Location Importer & Normalizer")
-st.markdown("""
-Aplikasi ini berfungsi untuk memproses file Excel Export PLN, melakukan normalisasi hirarki:
-1. **Menghapus sufiks Group (`-GRxxx`)** dari `SUP_FUNCTLOC` agar Tower & Span terhubung langsung ke Jalur.
-2. **Normalisasi `function_code`** (`SERANDANG` $\rightarrow$ `SG`, `V1`, `O1`, `X1`, dll).
-3. **Batch Upsert** otomatis ke Supabase (`mst_functloc` & `ref_flc`).
-""")
+# Header Profesional & Minimalis
+st.title("⚡ PLN Functional Location Data Engine")
+st.caption("EAM Data Transformation & Automated Synchronization Pipeline")
+
+st.divider()
 
 # ========================================================
-# 2. INI KONEKSI SUPABASE AMAN (MENGGUNAKAN SECRETS)
+# 2. AMBIL KREDENSIAL DARI ENVIRONMENT / STREAMLIT SECRETS
 # ========================================================
-st.sidebar.header("🔑 Supabase Credentials")
+SUPABASE_URL = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
 
-# Mengambil kredensial dari Streamlit Secrets jika ada, atau input manual via sidebar
-supabase_url = st.sidebar.text_input(
-    "Supabase URL", 
-    value=st.secrets.get("SUPABASE_URL", ""),
-    type="default"
-)
-supabase_key = st.sidebar.text_input(
-    "Supabase Service Role Key", 
-    value=st.secrets.get("SUPABASE_KEY", ""),
-    type="password"
-)
+with st.sidebar:
+    st.header("System Status")
+    if SUPABASE_URL and SUPABASE_KEY:
+        st.success("Database Connected")
+    else:
+        st.error("Database Disconnected")
+        st.caption("Configure `SUPABASE_URL` & `SUPABASE_KEY` in Settings -> Secrets.")
 
 # ========================================================
-# 3. FUNGSI LOGIKA NORMALISASI DATA
+# 3. FUNGSI TRANSFOMASI & NORMALISASI DATA
 # ========================================================
 def normalize_sup_functloc(sup_val):
     if pd.isna(sup_val):
@@ -57,11 +53,9 @@ def normalize_function_code(code_val, level_val, desc_val=""):
     except:
         level = 0.0
 
-    # 1. Normalisasi SERANDANG G di Level 4 / Deskripsi SERANDANG menjadi SG
     if code == 'G' and (level == 4.0 or 'SERANDANG' in desc):
         return 'SG'
 
-    # 2. Rule Mapping Kode Duplikat PLN (V, X, O, Q)
     mapping = {
         ('V', 3.0): 'V1', ('V', 4.0): 'V2',
         ('X', 3.5): 'X1', ('X', 4.0): 'X2',
@@ -72,16 +66,14 @@ def normalize_function_code(code_val, level_val, desc_val=""):
     return mapping.get((code, level), code)
 
 # ========================================================
-# 4. UPLOAD & PREVIEW FILE EXCEL
+# 4. UPLOAD & BACA FILE EXCEL
 # ========================================================
-uploaded_file = st.file_uploader("📂 Upload File Excel Hasil Export PLN (.xlsx)", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload Source Dataset (.xlsx)", type=["xlsx"])
 
 if uploaded_file is not None:
     try:
-        # Read Excel File
         df_raw = pd.read_excel(uploaded_file)
         
-        # Format Header (Memakai baris ke-2 jika header di baris 2)
         if "ID_FUNCTLOC" not in df_raw.columns:
             headers = df_raw.iloc[1].values
             df = df_raw.iloc[2:].copy()
@@ -89,43 +81,87 @@ if uploaded_file is not None:
         else:
             df = df_raw.copy()
 
-        st.success(f"File berhasil dibaca! Total data awal: **{len(df):,}** baris.")
-
-        # Exclude baris Group (KD_FUNGSI = 'X')
+        # Exclude baris perantara Group (KD_FUNGSI = 'X')
         df_cleaned = df[df['KD_FUNGSI'].astype(str).str.strip() != 'X'].copy()
 
-        # Jalankan Normalisasi
+        # Eksekusi Normalisasi
         df_cleaned['SUP_FUNCTLOC_CLEAN'] = df_cleaned['SUP_FUNCTLOC'].apply(normalize_sup_functloc)
         df_cleaned['FUNCTION_CODE_CLEAN'] = df_cleaned.apply(
             lambda r: normalize_function_code(r['KD_FUNGSI'], r['NLEVEL'], r['DESKRIPSI']), axis=1
         )
 
-        st.subheader("📊 Preview Hasil Normalisasi Data")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Total Data Siap Import (Non-Group)", f"{len(df_cleaned):,} baris")
-        with col2:
-            modified_count = (df_cleaned['SUP_FUNCTLOC'] != df_cleaned['SUP_FUNCTLOC_CLEAN']).sum()
-            st.metric("Data Parent (-GR) Di-Normalisasi", f"{modified_count:,} baris")
-
-        # Tampilkan Tabel Preview
-        preview_cols = ['ID_FUNCTLOC', 'SUP_FUNCTLOC', 'SUP_FUNCTLOC_CLEAN', 'KD_FUNGSI', 'FUNCTION_CODE_CLEAN', 'NM_LOKASI']
-        st.dataframe(df_cleaned[preview_cols].head(100), use_container_width=True)
+        # Metrics Calculation
+        total_data = len(df_cleaned)
+        gr_modified = (df_cleaned['SUP_FUNCTLOC'] != df_cleaned['SUP_FUNCTLOC_CLEAN']).sum()
+        sg_modified = (df_cleaned['FUNCTION_CODE_CLEAN'] == 'SG').sum()
+        mapped_codes = df_cleaned['FUNCTION_CODE_CLEAN'].isin(['V1', 'V2', 'O1', 'O2', 'X1', 'X2', 'Q1', 'Q2']).sum()
 
         # ========================================================
-        # 5. ESEKUSI PROCESS IMPORT KE SUPABASE
+        # 5. EXECUTIVE SUMMARY METRICS
+        # ========================================================
+        st.subheader("Data Processing Summary")
+        
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Valid FLC Records", f"{total_data:,}")
+        m2.metric("Flattened Group Parents", f"{gr_modified:,}")
+        m3.metric("Serandang Normalized (SG)", f"{sg_modified:,}")
+        m4.metric("Function Codes Re-mapped", f"{mapped_codes:,}")
+
+        # ========================================================
+        # 6. INTERACTIVE REVIEW TABLE
         # ========================================================
         st.divider()
-        if st.button("🚀 Mulai Import ke Supabase", type="primary", use_container_width=True):
-            if not supabase_url or not supabase_key:
-                st.error("❌ Harap isi Supabase URL & Service Role Key di sidebar terlebih dahulu!")
+        st.subheader("Dataset Review & Audit")
+
+        search_query = st.text_input("Filter Records:", "", placeholder="Type FLC ID, Location Name, Substation, Tower...")
+        
+        if search_query:
+            search_pattern = search_query.strip()
+            df_display = df_cleaned[
+                df_cleaned['ID_FUNCTLOC'].astype(str).str.contains(search_pattern, case=False, na=False) |
+                df_cleaned['NM_LOKASI'].astype(str).str.contains(search_pattern, case=False, na=False) |
+                df_cleaned['SUP_FUNCTLOC'].astype(str).str.contains(search_pattern, case=False, na=False)
+            ]
+        else:
+            df_display = df_cleaned
+
+        tab_choice = st.radio(
+            "View Mode:", 
+            ["Normalized Output", "Hierarchy Diff (Group Removal)", "Full Raw Dataset"],
+            horizontal=True
+        )
+
+        if tab_choice == "Normalized Output":
+            cols_review = ['ID_FUNCTLOC', 'SUP_FUNCTLOC_CLEAN', 'NM_LOKASI', 'FUNCTION_CODE_CLEAN', 'NLEVEL', 'STATUS', 'TEGANGAN', 'WORKCENTER', 'ID_PLANT']
+            st.dataframe(
+                df_display[cols_review].rename(columns={
+                    'SUP_FUNCTLOC_CLEAN': 'SUP_FUNCTLOC (NORMALIZED)',
+                    'FUNCTION_CODE_CLEAN': 'FUNCTION_CODE (MAPPED)'
+                }), 
+                use_container_width=True,
+                height=400
+            )
+
+        elif tab_choice == "Hierarchy Diff (Group Removal)":
+            cols_comp = ['ID_FUNCTLOC', 'SUP_FUNCTLOC', 'SUP_FUNCTLOC_CLEAN', 'KD_FUNGSI', 'FUNCTION_CODE_CLEAN', 'NM_LOKASI']
+            df_changed = df_display[df_display['SUP_FUNCTLOC'] != df_display['SUP_FUNCTLOC_CLEAN']]
+            st.caption(f"Showing {len(df_changed):,} modified parent relations:")
+            st.dataframe(df_changed[cols_comp], use_container_width=True, height=400)
+
+        else:
+            st.dataframe(df_display, use_container_width=True, height=400)
+
+        # ========================================================
+        # 7. EXECUTE SYNC
+        # ========================================================
+        st.divider()
+        if st.button("Synchronize to Supabase", type="primary", use_container_width=True):
+            if not SUPABASE_URL or not SUPABASE_KEY:
+                st.error("Database credentials unconfigured.")
             else:
                 try:
-                    # Inisialisasi Supabase Client
-                    supabase: Client = create_client(supabase_url, supabase_key)
+                    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
                     
-                    # Mapping data ke format Supabase
                     mapped_data = []
                     for _, row in df_cleaned.iterrows():
                         mapped_data.append({
@@ -146,26 +182,25 @@ if uploaded_file is not None:
                             "baygroup_code": str(row['BAYGROUP']).strip() if pd.notnull(row['BAYGROUP']) else None,
                         })
 
-                    # Progress Bar
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     
                     batch_size = 500
-                    total_batches = len(mapped_data)
+                    total_records = len(mapped_data)
                     
-                    for i in range(0, total_batches, batch_size):
+                    for i in range(0, total_records, batch_size):
                         batch = mapped_data[i:i + batch_size]
                         supabase.table('mst_functloc').upsert(batch).execute()
                         
-                        current_progress = min((i + batch_size) / total_batches, 1.0)
+                        current_progress = min((i + batch_size) / total_records, 1.0)
                         progress_bar.progress(current_progress)
-                        status_text.text(f"Mengunggah... {min(i + batch_size, total_batches)} dari {total_batches} baris.")
+                        status_text.text(f"Synchronizing records... {min(i + batch_size, total_records):,} / {total_records:,}")
 
                     st.balloons()
-                    st.success("🎉 Import Berhasil! Data telah tersinkronisasi sempurna ke `mst_functloc` & `ref_flc`!")
+                    st.success("Database synchronization completed successfully.")
 
                 except Exception as e:
-                    st.error(f"❌ Terjadi kesalahan saat mengunggah ke Supabase: {str(e)}")
+                    st.error(f"Synchronization failed: {str(e)}")
 
     except Exception as e:
-        st.error(f"❌ Gagal membaca file Excel: {str(e)}")
+        st.error(f"Error reading dataset: {str(e)}")
