@@ -1,5 +1,6 @@
 import os
 import re
+import math
 import pandas as pd
 import streamlit as st
 from supabase import create_client, Client, ClientOptions
@@ -84,26 +85,45 @@ with st.sidebar:
                     st.error(f"Login Failed: {str(err)}")
 
 # ========================================================
-# 3. FUNGSI TRANSFOMASI & NORMALISASI DATA
+# 3. FUNGSI TRANSFOMASI, NORMALISASI & SANITASI JSON
 # ========================================================
-def normalize_sup_functloc(sup_val):
-    if pd.isna(sup_val):
+def clean_str(val):
+    """Pembersih String: Mengubah NaN / null / string 'nan' menjadi None (JSON Null)"""
+    if pd.isna(val) or val is None:
         return None
-    return re.sub(r'-GR\d+$', '', str(sup_val).strip())
+    s_val = str(val).strip()
+    if s_val.lower() in ['nan', 'none', 'null', '']:
+        return None
+    return s_val
+
+def clean_float(val):
+    """Pembersih Float: Mencegah float('nan') lolos ke serializer JSON"""
+    if pd.isna(val) or val is None:
+        return None
+    try:
+        f_val = float(val)
+        if math.isnan(f_val) or math.isinf(f_val):
+            return None
+        return f_val
+    except (ValueError, TypeError):
+        return None
+
+def normalize_sup_functloc(sup_val):
+    cleaned = clean_str(sup_val)
+    if not cleaned:
+        return None
+    return re.sub(r'-GR\d+$', '', cleaned)
 
 def normalize_function_code(code_val, level_val, desc_val=""):
-    if pd.isna(code_val):
+    code = clean_str(code_val)
+    if not code:
         return None
     
-    code = str(code_val).strip()
-    desc = str(desc_val).upper() if pd.notnull(desc_val) else ""
-    
-    try:
-        level = float(level_val) if pd.notnull(level_val) else 0.0
-    except:
-        level = 0.0
+    desc = clean_str(desc_val) or ""
+    desc_upper = desc.upper()
+    level = clean_float(level_val) or 0.0
 
-    if code == 'G' and (level == 4.0 or 'SERANDANG' in desc):
+    if code == 'G' and (level == 4.0 or 'SERANDANG' in desc_upper):
         return 'SG'
 
     mapping = {
@@ -116,10 +136,10 @@ def normalize_function_code(code_val, level_val, desc_val=""):
     return mapping.get((code, level), code)
 
 def determine_is_active(status_val):
-    """Aturan is_active=True jika STATUS ada di 2, 4, 5, 6, 7, 8"""
-    if pd.isna(status_val):
+    cleaned = clean_str(status_val)
+    if not cleaned:
         return False
-    status_str = str(status_val).strip().split('.')[0].upper()
+    status_str = cleaned.split('.')[0].upper()
     return status_str in ['2', '4', '5', '6', '7', '8']
 
 # ========================================================
@@ -152,7 +172,7 @@ if uploaded_file is not None:
         )
 
         # 2. PARENT SANITIZATION (Memastikan SUP_FUNCTLOC_CLEAN benar-benar ada di ID_FUNCTLOC)
-        valid_flc_ids = set(df_cleaned['ID_FUNCTLOC'].astype(str).str.strip())
+        valid_flc_ids = set(df_cleaned['ID_FUNCTLOC'].dropna().astype(str).str.strip())
         df_cleaned['SUP_FUNCTLOC_CLEAN'] = df_cleaned['SUP_FUNCTLOC_CLEAN'].apply(
             lambda x: x if (x and str(x).strip() in valid_flc_ids) else None
         )
@@ -219,7 +239,7 @@ if uploaded_file is not None:
             st.dataframe(df_display, use_container_width=True, height=400)
 
         # ========================================================
-        # 7. EXECUTE SYNC (3-STEP PIPELINE WITH IS_ACTIVE RULE)
+        # 7. EXECUTE SYNC (DENGAN STRICT JSON SANITIZATION)
         # ========================================================
         st.divider()
         
@@ -243,12 +263,15 @@ if uploaded_file is not None:
                         mapped_data = []
 
                         for _, row in df_cleaned.iterrows():
-                            flc_id = str(row['ID_FUNCTLOC']).strip()
-                            loc_name = str(row['NM_LOKASI']).strip()
-                            fn_code = row['FUNCTION_CODE_CLEAN']
-                            status_code = row['STATUS']
+                            flc_id = clean_str(row.get('ID_FUNCTLOC'))
+                            if not flc_id:
+                                continue  # Lewati baris tanpa ID valid
 
-                            # Sesuai DDL public.ref_flc (termasuk penentuan is_active)
+                            loc_name = clean_str(row.get('NM_LOKASI')) or flc_id
+                            fn_code = clean_str(row.get('FUNCTION_CODE_CLEAN'))
+                            status_code = clean_str(row.get('STATUS'))
+
+                            # Payload ref_flc terbebas dari NaN
                             ref_flc_data.append({
                                 "flc_id": flc_id,
                                 "name": loc_name,
@@ -256,23 +279,23 @@ if uploaded_file is not None:
                                 "is_active": determine_is_active(status_code)
                             })
 
-                            # Sesuai DDL public.mst_functloc
+                            # Payload mst_functloc terbebas dari NaN
                             mapped_data.append({
                                 "functloc_id": flc_id,
-                                "sup_functloc_id": row['SUP_FUNCTLOC_CLEAN'],
+                                "sup_functloc_id": clean_str(row.get('SUP_FUNCTLOC_CLEAN')),
                                 "location_name": loc_name,
-                                "description": str(row['DESKRIPSI']).strip() if pd.notnull(row['DESKRIPSI']) else None,
-                                "unit_code": str(row['UNIT']).strip() if pd.notnull(row['UNIT']) else None,
-                                "nlevel": float(row['NLEVEL']) if pd.notnull(row['NLEVEL']) else None,
-                                "status_code": str(status_code).strip() if pd.notnull(status_code) else None,
-                                "voltage_code": str(row['TEGANGAN']).strip() if pd.notnull(row['TEGANGAN']) else None,
+                                "description": clean_str(row.get('DESKRIPSI')),
+                                "unit_code": clean_str(row.get('UNIT')),
+                                "nlevel": clean_float(row.get('NLEVEL')),
+                                "status_code": status_code,
+                                "voltage_code": clean_str(row.get('TEGANGAN')),
                                 "function_code": fn_code,
-                                "region_code": str(row['KD_WILAYAH']).strip() if pd.notnull(row['KD_WILAYAH']) else None,
-                                "workcenter": str(row['WORKCENTER']).strip() if pd.notnull(row['WORKCENTER']) else None,
-                                "plant_id": str(row['ID_PLANT']).strip() if pd.notnull(row['ID_PLANT']) else None,
-                                "grouplokasi_code": str(row['KD_GROUPLOKASI']).strip() if pd.notnull(row['KD_GROUPLOKASI']) else None,
-                                "gi_flc": str(row['GI_FLC']).strip() if pd.notnull(row['GI_FLC']) else None,
-                                "baygroup_code": str(row['BAYGROUP']).strip() if pd.notnull(row['BAYGROUP']) else None,
+                                "region_code": clean_str(row.get('KD_WILAYAH')),
+                                "workcenter": clean_str(row.get('WORKCENTER')),
+                                "plant_id": clean_str(row.get('ID_PLANT')),
+                                "grouplokasi_code": clean_str(row.get('KD_GROUPLOKASI')),
+                                "gi_flc": clean_str(row.get('GI_FLC')),
+                                "baygroup_code": clean_str(row.get('BAYGROUP')),
                             })
 
                         progress_bar = st.progress(0)
@@ -282,7 +305,7 @@ if uploaded_file is not None:
                         total_records = len(mapped_data)
 
                         # ----------------------------------------------------
-                        # TAHAP 1: Sync ke tabel ref_flc (dengan status is_active)
+                        # TAHAP 1: Sync ke tabel ref_flc
                         # ----------------------------------------------------
                         status_text.text("Step 1/3: Synchronizing reference table (ref_flc)...")
                         for i in range(0, total_records, batch_size):
@@ -315,7 +338,7 @@ if uploaded_file is not None:
                             progress_bar.progress(min(prog, 1.0))
 
                         st.balloons()
-                        st.success("🎉 All 3 synchronization steps completed successfully with 100% integrity & status calculation!")
+                        st.success("🎉 All 3 synchronization steps completed successfully with 100% integrity & JSON compliance!")
 
                     except Exception as e:
                         st.error(f"Synchronization failed: {str(e)}")
