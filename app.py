@@ -13,50 +13,70 @@ st.set_page_config(
     layout="wide"
 )
 
-# Header Profesional & Minimalis
+# Header Profesional
 st.title("⚡ PLN Functional Location Data Engine")
 st.caption("EAM Data Transformation & Automated Synchronization Pipeline")
 
 st.divider()
 
 # ========================================================
-# 2. AMBIL KREDENSIAL DARI ENVIRONMENT / STREAMLIT SECRETS
+# 2. INISIALISASI SUPABASE CLIENT & AUTH SESSION
 # ========================================================
 SUPABASE_URL = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD") or st.secrets.get("ADMIN_PASSWORD", "admin123")
 
-# Initialize Session State untuk Login Admin
-if "is_admin" not in st.session_state:
-    st.session_state["is_admin"] = False
+# Inisialisasi Supabase Client jika kredensial tersedia
+supabase: Client = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        st.error(f"Failed to initialize Supabase Client: {str(e)}")
 
-# Sidebar System Status & Admin Login Panel
+# Initialize Session State untuk Login User
+if "user" not in st.session_state:
+    st.session_state["user"] = None
+
+# Sidebar Authorization Panel (Email & Password Login)
 with st.sidebar:
     st.header("⚙️ System Status")
-    if SUPABASE_URL and SUPABASE_KEY:
+    if supabase:
         st.success("Database Connected")
     else:
         st.error("Database Disconnected")
-        st.caption("Configure credentials in Settings -> Secrets.")
+        st.caption("Configure `SUPABASE_URL` & `SUPABASE_KEY` in Settings -> Secrets.")
 
     st.divider()
-    st.header("🔐 Admin Authorization")
+    st.header("🔐 User Authentication")
     
-    if st.session_state["is_admin"]:
-        st.success("Logged in as Admin 🟢")
-        if st.button("Logout Admin", type="secondary", use_container_width=True):
-            st.session_state["is_admin"] = False
+    if st.session_state["user"]:
+        st.success(f"Logged in as:\n**{st.session_state['user'].email}** 🟢")
+        if st.button("Logout", type="secondary", use_container_width=True):
+            st.session_state["user"] = None
             st.rerun()
     else:
         st.info("Public Mode: View & Audit Only 👁️")
-        pwd_input = st.text_input("Enter Admin Password:", type="password")
-        if st.button("Login Admin", type="primary", use_container_width=True):
-            if pwd_input == ADMIN_PASSWORD:
-                st.session_state["is_admin"] = True
-                st.success("Login Successful!")
-                st.rerun()
+        email_input = st.text_input("Email:", placeholder="user@pln.co.id")
+        pwd_input = st.text_input("Password:", type="password")
+        
+        if st.button("Sign In", type="primary", use_container_width=True):
+            if not supabase:
+                st.error("Database Client not initialized.")
+            elif not email_input or not pwd_input:
+                st.warning("Please enter both Email and Password.")
             else:
-                st.error("Incorrect Password!")
+                try:
+                    # Authenticate via Supabase Auth
+                    response = supabase.auth.sign_in_with_password({
+                        "email": email_input.strip(),
+                        "password": pwd_input
+                    })
+                    if response.user:
+                        st.session_state["user"] = response.user
+                        st.success("Authentication Successful!")
+                        st.rerun()
+                except Exception as err:
+                    st.error(f"Login Failed: {str(err)}")
 
 # ========================================================
 # 3. FUNGSI TRANSFOMASI & NORMALISASI DATA
@@ -177,19 +197,17 @@ if uploaded_file is not None:
             st.dataframe(df_display, use_container_width=True, height=400)
 
         # ========================================================
-        # 7. EXECUTE SYNC (DIBATASI HANYA UNTUK ADMIN)
+        # 7. EXECUTE SYNC (OTORISASI EMAIL & PASSWORD)
         # ========================================================
         st.divider()
         
-        if st.session_state["is_admin"]:
-            st.success("🔓 Admin Mode Active: Data Synchronization Privileges Granted.")
+        if st.session_state["user"]:
+            st.success(f"🔓 Authorized Session Active ({st.session_state['user'].email}): Data Synchronization Privileges Granted.")
             if st.button("Synchronize to Supabase", type="primary", use_container_width=True):
-                if not SUPABASE_URL or not SUPABASE_KEY:
-                    st.error("Database credentials unconfigured.")
+                if not supabase:
+                    st.error("Database connection unavailable.")
                 else:
                     try:
-                        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-                        
                         mapped_data = []
                         for _, row in df_cleaned.iterrows():
                             mapped_data.append({
@@ -230,7 +248,7 @@ if uploaded_file is not None:
                     except Exception as e:
                         st.error(f"Synchronization failed: {str(e)}")
         else:
-            st.warning("🔒 Synchronization Restricted: Please login as Admin via the sidebar to execute database updates.")
+            st.warning("🔒 Synchronization Restricted: Sign in via sidebar using your Supabase account to execute database updates.")
 
     except Exception as e:
         st.error(f"Error reading dataset: {str(e)}")
