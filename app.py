@@ -2,7 +2,7 @@ import os
 import re
 import pandas as pd
 import streamlit as st
-from supabase import create_client, Client
+from supabase import create_client, Client, ClientOptions
 
 # ========================================================
 # 1. KONFIGURASI HALAMAN STREAMLIT
@@ -33,7 +33,7 @@ if SUPABASE_URL and SUPABASE_KEY:
     except Exception as e:
         st.error(f"Failed to initialize Supabase Client: {str(e)}")
 
-# Initialize Session State untuk menyimpan data User & Session
+# Initialize Session State
 if "user" not in st.session_state:
     st.session_state["user"] = None
 if "session" not in st.session_state:
@@ -207,7 +207,7 @@ if uploaded_file is not None:
             st.dataframe(df_display, use_container_width=True, height=400)
 
         # ========================================================
-        # 7. EXECUTE SYNC (OTORISASI EMAIL & PASSWORD WITH JWT TOKEN)
+        # 7. EXECUTE SYNC (DENGAN AUTHENTICATED CLIENT)
         # ========================================================
         st.divider()
         
@@ -219,14 +219,14 @@ if uploaded_file is not None:
                     st.error("Database connection unavailable.")
                 else:
                     try:
-                        # 1. AMBIL JWT ACCESS TOKEN USER DARI SESSION STATE
+                        # 1. AMBIL ACCESS TOKEN USER
                         access_token = st.session_state["session"].access_token
 
-                        # 2. BUAT AUTHENTICATED CLIENT DENGAN TOKEN BEARER USER (ROLE: AUTHENTICATED)
+                        # 2. INSIALISASI CLIENT DENGAN ClientOptions HADER BEARER TOKEN
                         auth_supabase = create_client(
                             SUPABASE_URL, 
                             SUPABASE_KEY, 
-                            options={"headers": {"Authorization": f"Bearer {access_token}"}}
+                            options=ClientOptions(headers={"Authorization": f"Bearer {access_token}"})
                         )
 
                         mapped_data = []
@@ -258,7 +258,7 @@ if uploaded_file is not None:
                         for i in range(0, total_records, batch_size):
                             batch = mapped_data[i:i + batch_size]
                             
-                            # ESEKUSI MENGGUNAKAN AUTHENTICATED CLIENT
+                            # EXECUTE BATCH UPSERT DENGAN CLIENT TERAUTENTIKASI
                             auth_supabase.table('mst_functloc').upsert(batch).execute()
                             
                             current_progress = min((i + batch_size) / total_records, 1.0)
