@@ -5,34 +5,61 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client, Client, ClientOptions
 
-# Konfigurasi Halaman
-st.set_page_config(page_title="PLN FLC Data Engine", page_icon="⚡", layout="wide")
-st.title("⚡ PLN Functional Location Data Engine")
+# ========================================================
+# 1. KONFIGURASI HALAMAN
+# ========================================================
+st.set_page_config(page_title="PLN Data Importer", page_icon="⚡", layout="wide")
+st.title("⚡ PLN Functional Location Data Importer")
 
 # Inisialisasi Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-supabase = None
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    except Exception as e:
-        st.error(f"Supabase init error: {str(e)}")
+# Session State Auth
+if "user" not in st.session_state: st.session_state["user"] = None
+if "session" not in st.session_state: st.session_state["session"] = None
 
-# Fungsi Pembersih Data (Agar Tidak Error JSON / Nan)
+# ========================================================
+# 2. SIDEBAR (AUTH & STATUS)
+# ========================================================
+with st.sidebar:
+    st.header("⚙️ System Status")
+    st.success("Database Connected") if supabase else st.error("Database Disconnected")
+    st.divider()
+    st.header("🔐 User Authentication")
+    if st.session_state["user"]:
+        st.write(f"Login: **{st.session_state['user'].email}**")
+        if st.button("Logout"):
+            st.session_state["user"] = None
+            st.session_state["session"] = None
+            st.rerun()
+    else:
+        email = st.text_input("Email")
+        pwd = st.text_input("Password", type="password")
+        if st.button("Sign In"):
+            try:
+                res = supabase.auth.sign_in_with_password({"email": email, "password": pwd})
+                st.session_state["user"] = res.user
+                st.session_state["session"] = res.session
+                st.rerun()
+            except Exception as e:
+                st.error("Login Gagal")
+
+# ========================================================
+# 3. FUNGSI SANITASI & NORMALISASI (FIXES RESTORED)
+# ========================================================
 def clean_str(val):
     if pd.isna(val) or val is None: return None
-    s_val = str(val).strip()
-    if s_val.lower() in ['nan', 'none', 'null', '']: return None
-    return s_val
+    s = str(val).strip()
+    return None if s.lower() in ['nan', 'none', 'null', ''] else s
 
 def clean_float(val):
     if pd.isna(val) or val is None: return None
     try:
-        if isinstance(val, str): val = val.replace(',', '.')
-        f_val = float(val)
-        return None if math.isnan(f_val) or math.isinf(f_val) else f_val
+        val = str(val).replace(',', '.')
+        f = float(val)
+        return None if math.isnan(f) or math.isinf(f) else f
     except: return None
 
 def clean_date(val):
@@ -42,7 +69,6 @@ def clean_date(val):
         return None if pd.isna(dt) else dt.strftime('%Y-%m-%d')
     except: return None
 
-# Fungsi Bisnis PLN
 def normalize_function_code(code_val, level_val, desc_val=""):
     code = clean_str(code_val)
     if not code: return None
@@ -53,11 +79,13 @@ def normalize_function_code(code_val, level_val, desc_val=""):
     return mapping.get((code, level), code)
 
 def determine_is_active(status_val):
-    cleaned = clean_str(status_val)
-    return cleaned.split('.')[0].upper() in ['2', '4', '5', '6', '7', '8'] if cleaned else False
+    c = clean_str(status_val)
+    return c.split('.')[0].upper() in ['2', '4', '5', '6', '7', '8'] if c else False
 
-# Main Logic
-uploaded_file = st.file_uploader("Upload Excel FLC PLN", type=["xlsx"])
+# ========================================================
+# 4. PROSES IMPORT
+# ========================================================
+uploaded_file = st.file_uploader("Upload Excel Master Data", type=["xlsx"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
@@ -65,49 +93,71 @@ if uploaded_file:
         df.columns = df.iloc[1].values
         df = df.iloc[2:].copy()
     
-    df_cleaned = df[df['KD_FUNGSI'].astype(str).str.strip() != 'X'].copy()
-    
-    # Mapping Data
-    mapped_data = []
-    ref_flc_data = []
-    
-    for _, row in df_cleaned.iterrows():
-        flc_id = clean_str(row.get('ID_FUNCTLOC'))
-        if not flc_id: continue
-        
-        status_code = clean_str(row.get('STATUS'))
-        fn_code = normalize_function_code(row.get('KD_FUNGSI'), row.get('NLEVEL'), row.get('DESKRIPSI'))
-        loc_name = clean_str(row.get('NM_LOKASI'))
-        
-        # Referensi ref_flc
-        ref_flc_data.append({"flc_id": flc_id, "name": loc_name, "function_code": fn_code, "is_active": determine_is_active(status_code)})
-        
-        # Data Mst_functloc (mapping lengkap)
-        mapped_data.append({
-            "functloc_id": flc_id,
-            "sup_functloc_id": re.sub(r'-GR\d+$', '', clean_str(row.get('SUP_FUNCTLOC')) or ""),
-            "location_name": loc_name,
-            "description": clean_str(row.get('DESKRIPSI')),
-            "short_name": clean_str(row.get('NMSINGKT')), # MAP NMSINGKT KE SHORT NAME
-            "address": clean_str(row.get('ALAMAT')),
-            "city": clean_str(row.get('KOTA')),
-            "latitude": clean_float(row.get('LATITUDE')),
-            "longitude": clean_float(row.get('LONGITUDE')),
-            "slo_date": clean_date(row.get('TGL_SLO')),
-            "slo_number": clean_str(row.get('NO_SLO')),
-            "status_code": status_code,
-            "function_code": fn_code,
-            "voltage_code": clean_str(row.get('TEGANGAN')),
-            "region_code": clean_str(row.get('KD_WILAYAH')),
-            "grouplokasi_code": clean_str(row.get('KD_GROUPLOKASI')),
-            "baygroup_code": clean_str(row.get('BAYGROUP')),
-            "unit_code": clean_str(row.get('UNIT')),
-            "plant_id": clean_str(row.get('ID_PLANT')),
-            "operational_date": clean_date(row.get('TGL_OPRS')),
-            "ownership": clean_str(row.get('MILIK'))
-        })
+    if st.button("Jalankan Import Data"):
+        if not st.session_state["user"]:
+            st.error("Harap login di Sidebar!")
+            st.stop()
+            
+        access_token = st.session_state["session"].access_token
+        auth_supabase = create_client(SUPABASE_URL, SUPABASE_KEY, 
+                        options=ClientOptions(headers={"Authorization": f"Bearer {access_token}"}))
 
-    if st.button("Sync to Supabase"):
-        # Logic 3-step sync (seperti kode sebelumnya)
-        st.success("Sync Started...")
-        # (Tambahkan loop 3 step sync disini seperti kode sebelumnya)
+        with st.spinner("Processing..."):
+            mapped_data, ref_flc_data = [], []
+            
+            # Sanitasi Parent ID (Validasi vs Database/Excel)
+            valid_ids = set(df['ID_FUNCTLOC'].dropna().astype(str).str.strip())
+            
+            for _, row in df.iterrows():
+                flc_id = clean_str(row.get('ID_FUNCTLOC'))
+                if not flc_id: continue
+                
+                # Normalisasi Parent
+                raw_sup = clean_str(row.get('SUP_FUNCTLOC'))
+                sup_id = re.sub(r'-GR\d+$', '', raw_sup) if raw_sup else None
+                sup_id = sup_id if sup_id in valid_ids else None
+                
+                status = clean_str(row.get('STATUS'))
+                fn_code = normalize_function_code(row.get('KD_FUNGSI'), row.get('NLEVEL'), row.get('DESKRIPSI'))
+                loc_name = clean_str(row.get('NM_LOKASI'))
+                
+                # Ref data
+                ref_flc_data.append({"flc_id": flc_id, "name": loc_name, "function_code": fn_code, "is_active": determine_is_active(status)})
+                
+                # Mst data
+                mapped_data.append({
+                    "functloc_id": flc_id,
+                    "sup_functloc_id": sup_id,
+                    "location_name": loc_name,
+                    "short_name": clean_str(row.get('NMSINGKT')),
+                    "description": clean_str(row.get('DESKRIPSI')),
+                    "status_code": status,
+                    "address": clean_str(row.get('ALAMAT')),
+                    "city": clean_str(row.get('KOTA')),
+                    "latitude": clean_float(row.get('LATITUDE')),
+                    "longitude": clean_float(row.get('LONGITUDE')),
+                    "slo_date": clean_date(row.get('TGL_SLO')),
+                    "slo_number": clean_str(row.get('NO_SLO')),
+                    "function_code": fn_code,
+                    "voltage_code": clean_str(row.get('TEGANGAN')),
+                    "region_code": clean_str(row.get('KD_WILAYAH')),
+                    "grouplokasi_code": clean_str(row.get('KD_GROUPLOKASI')),
+                    "baygroup_code": clean_str(row.get('BAYGROUP')),
+                    "unit_code": clean_str(row.get('UNIT')),
+                    "plant_id": clean_str(row.get('ID_PLANT')),
+                    "operational_date": clean_date(row.get('TGL_OPRS')),
+                    "ownership": clean_str(row.get('MILIK'))
+                })
+
+            # 3-Step Sync
+            total = len(mapped_data)
+            batch = 500
+            for i in range(0, total, batch):
+                auth_supabase.table('ref_flc').upsert(ref_flc_data[i:i+batch]).execute()
+            for i in range(0, total, batch):
+                data = [dict(item, sup_functloc_id=None) for item in mapped_data[i:i+batch]]
+                auth_supabase.table('mst_functloc').upsert(data).execute()
+            for i in range(0, total, batch):
+                auth_supabase.table('mst_functloc').upsert(mapped_data[i:i+batch]).execute()
+                
+        st.success("Import Berhasil dengan data yang ter-normalisasi!")
