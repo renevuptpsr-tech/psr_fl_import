@@ -25,7 +25,11 @@ if "session" not in st.session_state: st.session_state["session"] = None
 # ========================================================
 with st.sidebar:
     st.header("⚙️ System Status")
-    st.success("Database Connected") if supabase else st.error("Database Disconnected")
+    if supabase:
+        st.success("Database Connected")
+    else:
+        st.error("Database Disconnected")
+    
     st.divider()
     st.header("🔐 User Authentication")
     if st.session_state["user"]:
@@ -47,7 +51,7 @@ with st.sidebar:
                 st.error("Login Gagal")
 
 # ========================================================
-# 3. FUNGSI SANITASI & NORMALISASI (FIXES RESTORED)
+# 3. FUNGSI SANITASI & NORMALISASI
 # ========================================================
 def clean_str(val):
     if pd.isna(val) or val is None: return None
@@ -124,7 +128,7 @@ if uploaded_file:
                 # Ref data
                 ref_flc_data.append({"flc_id": flc_id, "name": loc_name, "function_code": fn_code, "is_active": determine_is_active(status)})
                 
-                # Mst data
+                # Mst data (Mapping lengkap tanpa ada yang terlewat)
                 mapped_data.append({
                     "functloc_id": flc_id,
                     "sup_functloc_id": sup_id,
@@ -149,14 +153,17 @@ if uploaded_file:
                     "ownership": clean_str(row.get('MILIK'))
                 })
 
-            # 3-Step Sync
+            # 3-Step Sync (Mencegah Error Foreign Key)
             total = len(mapped_data)
             batch = 500
+            
             for i in range(0, total, batch):
                 auth_supabase.table('ref_flc').upsert(ref_flc_data[i:i+batch]).execute()
+            
             for i in range(0, total, batch):
                 data = [dict(item, sup_functloc_id=None) for item in mapped_data[i:i+batch]]
                 auth_supabase.table('mst_functloc').upsert(data).execute()
+            
             for i in range(0, total, batch):
                 auth_supabase.table('mst_functloc').upsert(mapped_data[i:i+batch]).execute()
                 
