@@ -24,14 +24,39 @@ st.divider()
 # ========================================================
 SUPABASE_URL = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD") or st.secrets.get("ADMIN_PASSWORD", "admin123")
 
+# Initialize Session State untuk Login Admin
+if "is_admin" not in st.session_state:
+    st.session_state["is_admin"] = False
+
+# Sidebar System Status & Admin Login Panel
 with st.sidebar:
-    st.header("System Status")
+    st.header("⚙️ System Status")
     if SUPABASE_URL and SUPABASE_KEY:
         st.success("Database Connected")
     else:
         st.error("Database Disconnected")
-        st.caption("Configure `SUPABASE_URL` & `SUPABASE_KEY` in Settings -> Secrets.")
+        st.caption("Configure credentials in Settings -> Secrets.")
+
+    st.divider()
+    st.header("🔐 Admin Authorization")
+    
+    if st.session_state["is_admin"]:
+        st.success("Logged in as Admin 🟢")
+        if st.button("Logout Admin", type="secondary", use_container_width=True):
+            st.session_state["is_admin"] = False
+            st.rerun()
+    else:
+        st.info("Public Mode: View & Audit Only 👁️")
+        pwd_input = st.text_input("Enter Admin Password:", type="password")
+        if st.button("Login Admin", type="primary", use_container_width=True):
+            if pwd_input == ADMIN_PASSWORD:
+                st.session_state["is_admin"] = True
+                st.success("Login Successful!")
+                st.rerun()
+            else:
+                st.error("Incorrect Password!")
 
 # ========================================================
 # 3. FUNGSI TRANSFOMASI & NORMALISASI DATA
@@ -152,55 +177,60 @@ if uploaded_file is not None:
             st.dataframe(df_display, use_container_width=True, height=400)
 
         # ========================================================
-        # 7. EXECUTE SYNC
+        # 7. EXECUTE SYNC (DIBATASI HANYA UNTUK ADMIN)
         # ========================================================
         st.divider()
-        if st.button("Synchronize to Supabase", type="primary", use_container_width=True):
-            if not SUPABASE_URL or not SUPABASE_KEY:
-                st.error("Database credentials unconfigured.")
-            else:
-                try:
-                    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-                    
-                    mapped_data = []
-                    for _, row in df_cleaned.iterrows():
-                        mapped_data.append({
-                            "functloc_id": str(row['ID_FUNCTLOC']).strip(),
-                            "sup_functloc_id": row['SUP_FUNCTLOC_CLEAN'],
-                            "location_name": str(row['NM_LOKASI']).strip(),
-                            "description": str(row['DESKRIPSI']).strip() if pd.notnull(row['DESKRIPSI']) else None,
-                            "unit_code": str(row['UNIT']).strip() if pd.notnull(row['UNIT']) else None,
-                            "nlevel": float(row['NLEVEL']) if pd.notnull(row['NLEVEL']) else None,
-                            "status_code": str(row['STATUS']).strip() if pd.notnull(row['STATUS']) else None,
-                            "voltage_code": str(row['TEGANGAN']).strip() if pd.notnull(row['TEGANGAN']) else None,
-                            "function_code": row['FUNCTION_CODE_CLEAN'],
-                            "region_code": str(row['KD_WILAYAH']).strip() if pd.notnull(row['KD_WILAYAH']) else None,
-                            "workcenter": str(row['WORKCENTER']).strip() if pd.notnull(row['WORKCENTER']) else None,
-                            "plant_id": str(row['ID_PLANT']).strip() if pd.notnull(row['ID_PLANT']) else None,
-                            "grouplokasi_code": str(row['KD_GROUPLOKASI']).strip() if pd.notnull(row['KD_GROUPLOKASI']) else None,
-                            "gi_flc": str(row['GI_FLC']).strip() if pd.notnull(row['GI_FLC']) else None,
-                            "baygroup_code": str(row['BAYGROUP']).strip() if pd.notnull(row['BAYGROUP']) else None,
-                        })
-
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    batch_size = 500
-                    total_records = len(mapped_data)
-                    
-                    for i in range(0, total_records, batch_size):
-                        batch = mapped_data[i:i + batch_size]
-                        supabase.table('mst_functloc').upsert(batch).execute()
+        
+        if st.session_state["is_admin"]:
+            st.success("🔓 Admin Mode Active: Data Synchronization Privileges Granted.")
+            if st.button("Synchronize to Supabase", type="primary", use_container_width=True):
+                if not SUPABASE_URL or not SUPABASE_KEY:
+                    st.error("Database credentials unconfigured.")
+                else:
+                    try:
+                        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
                         
-                        current_progress = min((i + batch_size) / total_records, 1.0)
-                        progress_bar.progress(current_progress)
-                        status_text.text(f"Synchronizing records... {min(i + batch_size, total_records):,} / {total_records:,}")
+                        mapped_data = []
+                        for _, row in df_cleaned.iterrows():
+                            mapped_data.append({
+                                "functloc_id": str(row['ID_FUNCTLOC']).strip(),
+                                "sup_functloc_id": row['SUP_FUNCTLOC_CLEAN'],
+                                "location_name": str(row['NM_LOKASI']).strip(),
+                                "description": str(row['DESKRIPSI']).strip() if pd.notnull(row['DESKRIPSI']) else None,
+                                "unit_code": str(row['UNIT']).strip() if pd.notnull(row['UNIT']) else None,
+                                "nlevel": float(row['NLEVEL']) if pd.notnull(row['NLEVEL']) else None,
+                                "status_code": str(row['STATUS']).strip() if pd.notnull(row['STATUS']) else None,
+                                "voltage_code": str(row['TEGANGAN']).strip() if pd.notnull(row['TEGANGAN']) else None,
+                                "function_code": row['FUNCTION_CODE_CLEAN'],
+                                "region_code": str(row['KD_WILAYAH']).strip() if pd.notnull(row['KD_WILAYAH']) else None,
+                                "workcenter": str(row['WORKCENTER']).strip() if pd.notnull(row['WORKCENTER']) else None,
+                                "plant_id": str(row['ID_PLANT']).strip() if pd.notnull(row['ID_PLANT']) else None,
+                                "grouplokasi_code": str(row['KD_GROUPLOKASI']).strip() if pd.notnull(row['KD_GROUPLOKASI']) else None,
+                                "gi_flc": str(row['GI_FLC']).strip() if pd.notnull(row['GI_FLC']) else None,
+                                "baygroup_code": str(row['BAYGROUP']).strip() if pd.notnull(row['BAYGROUP']) else None,
+                            })
 
-                    st.balloons()
-                    st.success("Database synchronization completed successfully.")
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        batch_size = 500
+                        total_records = len(mapped_data)
+                        
+                        for i in range(0, total_records, batch_size):
+                            batch = mapped_data[i:i + batch_size]
+                            supabase.table('mst_functloc').upsert(batch).execute()
+                            
+                            current_progress = min((i + batch_size) / total_records, 1.0)
+                            progress_bar.progress(current_progress)
+                            status_text.text(f"Synchronizing records... {min(i + batch_size, total_records):,} / {total_records:,}")
 
-                except Exception as e:
-                    st.error(f"Synchronization failed: {str(e)}")
+                        st.balloons()
+                        st.success("Database synchronization completed successfully.")
+
+                    except Exception as e:
+                        st.error(f"Synchronization failed: {str(e)}")
+        else:
+            st.warning("🔒 Synchronization Restricted: Please login as Admin via the sidebar to execute database updates.")
 
     except Exception as e:
         st.error(f"Error reading dataset: {str(e)}")
