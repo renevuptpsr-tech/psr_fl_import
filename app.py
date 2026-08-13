@@ -134,7 +134,7 @@ if uploaded_file is not None:
         # Exclude baris perantara Group (KD_FUNGSI = 'X')
         df_cleaned = df[df['KD_FUNGSI'].astype(str).str.strip() != 'X'].copy()
 
-        # Urutkan berdasarkan NLEVEL Ascending (Parent Level 1/2/3 terlebih dahulu)
+        # Urutkan NLEVEL Ascending
         df_cleaned['NLEVEL_NUM'] = pd.to_numeric(df_cleaned['NLEVEL'], errors='coerce').fillna(99)
         df_cleaned = df_cleaned.sort_values(by='NLEVEL_NUM', ascending=True)
 
@@ -206,7 +206,7 @@ if uploaded_file is not None:
             st.dataframe(df_display, use_container_width=True, height=400)
 
         # ========================================================
-        # 7. EXECUTE SYNC (2-PASS SYNC: AMAN DARIK FOREIGN KEY FK_PARENT)
+        # 7. EXECUTE SYNC (3-STEP PIPELINE: REF_FLC -> MST_PASS_1 -> MST_PASS_2)
         # ========================================================
         st.divider()
         
@@ -226,12 +226,24 @@ if uploaded_file is not None:
                             options=ClientOptions(headers={"Authorization": f"Bearer {access_token}"})
                         )
 
+                        # Data untuk ref_flc
+                        ref_flc_data = []
+                        # Data untuk mst_functloc
                         mapped_data = []
+
                         for _, row in df_cleaned.iterrows():
+                            flc_id = str(row['ID_FUNCTLOC']).strip()
+                            loc_name = str(row['NM_LOKASI']).strip()
+
+                            ref_flc_data.append({
+                                "flc_id": flc_id,
+                                "flc_name": loc_name
+                            })
+
                             mapped_data.append({
-                                "functloc_id": str(row['ID_FUNCTLOC']).strip(),
+                                "functloc_id": flc_id,
                                 "sup_functloc_id": row['SUP_FUNCTLOC_CLEAN'],
-                                "location_name": str(row['NM_LOKASI']).strip(),
+                                "location_name": loc_name,
                                 "description": str(row['DESKRIPSI']).strip() if pd.notnull(row['DESKRIPSI']) else None,
                                 "unit_code": str(row['UNIT']).strip() if pd.notnull(row['UNIT']) else None,
                                 "nlevel": float(row['NLEVEL']) if pd.notnull(row['NLEVEL']) else None,
@@ -253,29 +265,40 @@ if uploaded_file is not None:
                         total_records = len(mapped_data)
 
                         # ----------------------------------------------------
-                        # TAHAP 1: Registrasi Semua ID (Set sup_functloc_id = None)
+                        # TAHAP 1: Sync ke tabel ref_flc
                         # ----------------------------------------------------
-                        status_text.text("Pass 1/2: Registering all FLC IDs to database...")
+                        status_text.text("Step 1/3: Synchronizing reference table (ref_flc)...")
+                        for i in range(0, total_records, batch_size):
+                            batch_ref = ref_flc_data[i:i + batch_size]
+                            auth_supabase.table('ref_flc').upsert(batch_ref).execute()
+                            
+                            prog = ((i + batch_size) / total_records) * 0.33
+                            progress_bar.progress(min(prog, 0.33))
+
+                        # ----------------------------------------------------
+                        # TAHAP 2: Sync ke mst_functloc (IDs without Parent)
+                        # ----------------------------------------------------
+                        status_text.text("Step 2/3: Registering records into mst_functloc...")
                         for i in range(0, total_records, batch_size):
                             batch_p1 = [dict(item, sup_functloc_id=None) for item in mapped_data[i:i + batch_size]]
                             auth_supabase.table('mst_functloc').upsert(batch_p1).execute()
                             
-                            prog = ((i + batch_size) / total_records) * 0.5
-                            progress_bar.progress(min(prog, 0.5))
+                            prog = 0.33 + (((i + batch_size) / total_records) * 0.33)
+                            progress_bar.progress(min(prog, 0.66))
 
                         # ----------------------------------------------------
-                        # TAHAP 2: Linking Parent Hierarchy (Set sup_functloc_id Asli)
+                        # TAHAP 3: Sync Parent-Child Hierarchy Relationships
                         # ----------------------------------------------------
-                        status_text.text("Pass 2/2: Linking parent-child hierarchy relations...")
+                        status_text.text("Step 3/3: Linking parent-child hierarchy relations...")
                         for i in range(0, total_records, batch_size):
                             batch_p2 = mapped_data[i:i + batch_size]
                             auth_supabase.table('mst_functloc').upsert(batch_p2).execute()
                             
-                            prog = 0.5 + (((i + batch_size) / total_records) * 0.5)
+                            prog = 0.66 + (((i + batch_size) / total_records) * 0.34)
                             progress_bar.progress(min(prog, 1.0))
 
                         st.balloons()
-                        st.success("🎉 Database synchronization completed successfully with 100% hierarchy integrity!")
+                        st.success("🎉 All 3 synchronization steps completed successfully with 100% integrity!")
 
                     except Exception as e:
                         st.error(f"Synchronization failed: {str(e)}")
